@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import prisma from "@/lib/prisma";
 
-const productPublicSelect = {
+export const productPublicSelect = {
     id: true,
     name: true,
     brand: true,
