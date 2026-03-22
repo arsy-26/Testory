@@ -71,6 +71,7 @@ model Product {
 model Order {
   id          String @id @default(cuid())
   orderNumber String @unique
+  trackingToken String @unique
 
   customerName  String
   customerPhone String
@@ -90,7 +91,6 @@ model Order {
 
   @@index([status, expiresAt])
   @@index([customerPhone])
-  @@index([orderNumber])
 }
 
 model OrderItem {
