@@ -1,6 +1,13 @@
 import { NextRequest } from "next/server";
 import prisma from "@/lib/prisma";
 
+const DEFAULT_PAGE = 1;
+const DEFAULT_LIMIT = 20;
+const MAX_LIMIT = 100;
+
+const VALID_STATUSES = ["READY", "INCOMING", "PO"] as const;
+type ProductStatus = (typeof VALID_STATUSES)[number];
+
 export const productPublicSelect = {
     id: true,
     name: true,
@@ -24,28 +31,52 @@ export async function GET(req: NextRequest) {
     try {
         const { searchParams } = req.nextUrl;
 
-        let status = searchParams.get("status");
-        const page = parseInt(searchParams.get("page") || "1");
-        const limit = parseInt(searchParams.get("limit") || "20");
-        const brand = searchParams.get("brand");
-        const search = searchParams.get("search");
-        const minPrice = searchParams.get("minPrice");
-        const maxPrice = searchParams.get("maxPrice");
-
-        status = status ? status.toUpperCase() : null;
-
-        if (status && !["READY", "INCOMING", "PO"].includes(status)) {
-            return Response.json({ error: "Invalid status" }, { status: 400 });
+        const rawStatus = searchParams.get("status")?.toUpperCase() as ProductStatus | null;
+        if (rawStatus && !VALID_STATUSES.includes(rawStatus)) {
+            return Response.json(
+                {
+                    error: "Invalid status",
+                    validValues: VALID_STATUSES,
+                },
+                { status: 400 }
+            );
         }
+
+        const rawPage = parseInt(searchParams.get("page") || String(DEFAULT_PAGE));
+        const rawLimit = parseInt(searchParams.get("limit") || String(DEFAULT_LIMIT));
+        const page = isNaN(rawPage) || rawPage < 1 ? DEFAULT_PAGE : rawPage;
+        const limit = isNaN(rawLimit) || rawLimit < 1
+            ? DEFAULT_LIMIT
+            : Math.min(rawLimit, MAX_LIMIT);
 
         const skip = (page - 1) * limit;
 
-        const where: any = {
+        const search = searchParams.get("search")?.trim() || null;
+
+        const brand = searchParams.get("brand")?.trim() || null;
+
+        const rawMinPrice = parseInt(searchParams.get("minPrice") || "");
+        const rawMaxPrice = parseInt(searchParams.get("maxPrice") || "");
+        const minPrice = isNaN(rawMinPrice) ? null : rawMinPrice;
+        const maxPrice = isNaN(rawMaxPrice) ? null : rawMaxPrice;
+
+        if (minPrice !== null && maxPrice !== null && minPrice > maxPrice) {
+            return Response.json(
+                { error: "minPrice tidak boleh lebih besar dari maxPrice" },
+                { status: 400 }
+            );
+        }
+
+        const where: Parameters<typeof prisma.product.findMany>[0]["where"] = {
             isActive: true,
         };
 
-        if (brand) where.brand = brand;
-        if (status) where.status = status;
+        if (rawStatus) where.status = rawStatus;
+
+        if (brand) {
+            where.brand = { equals: brand, mode: "insensitive" };
+        }
+
         if (search) {
             where.OR = [
                 { name: { contains: search, mode: "insensitive" } },
@@ -53,13 +84,14 @@ export async function GET(req: NextRequest) {
                 { processor: { contains: search, mode: "insensitive" } },
             ];
         }
-        if (minPrice || maxPrice) {
-            where.price = {};
-            if (minPrice) where.price.gte = parseInt(minPrice);
-            if (maxPrice) where.price.lte = parseInt(maxPrice);
+
+        if (minPrice !== null || maxPrice !== null) {
+            where.price = {
+                ...(minPrice !== null && { gte: minPrice }),
+                ...(maxPrice !== null && { lte: maxPrice }),
+            };
         }
 
-        // Fetch products
         const [products, total] = await Promise.all([
             prisma.product.findMany({
                 where,
@@ -71,10 +103,9 @@ export async function GET(req: NextRequest) {
             prisma.product.count({ where }),
         ]);
 
-        // Add computed field: availableStock
-        const productsWithAvailable = products.map((p) => ({
+        const productsWithAvailable = products.map(({ stock, reserved, ...p }) => ({
             ...p,
-            availableStock: p.stock - p.reserved,
+            availableStock: stock - reserved,
         }));
 
         return Response.json({
@@ -84,6 +115,8 @@ export async function GET(req: NextRequest) {
                 limit,
                 total,
                 totalPages: Math.ceil(total / limit),
+                hasNextPage: page * limit < total,
+                hasPrevPage: page > 1,
             },
         });
     } catch (error) {
