@@ -5,10 +5,13 @@ import {
     generateOrderNumber,
     normalizePhone,
     checkOrderRateLimit,
+    generateTrackingToken,
+    formatRupiah,
 } from "@/lib/utils";
 import { createOrderSchema } from "@/validations/orders/order.schema";
 
 const CRITICAL_STOCK_THRESHOLD = 5;
+const ORDER_EXPIRES_IN_MS = 30 * 60 * 1000;
 
 type RawProduct = {
     id: string;
@@ -82,6 +85,7 @@ export async function POST(req: NextRequest) {
         }
 
         const isCriticalStock = availableStock <= CRITICAL_STOCK_THRESHOLD;
+        const trackingToken = generateTrackingToken()
 
         const order = await prisma.$transaction(
             async (tx) => {
@@ -135,12 +139,13 @@ export async function POST(req: NextRequest) {
                 const newOrder = await tx.order.create({
                     data: {
                         orderNumber: generateOrderNumber(),
+                        trackingToken,
                         customerName,
                         customerPhone: normalizedPhone,
                         notes: notes || null,
                         totalAmount: product.price * requestedQty,
                         status: "PENDING",
-                        expiresAt: new Date(Date.now() + 30 * 60 * 1000),
+                        expiresAt: new Date(Date.now() + ORDER_EXPIRES_IN_MS),
                         items: {
                             create: [{
                                 productId: product.id,
@@ -169,6 +174,25 @@ export async function POST(req: NextRequest) {
             }
         );
 
+        const productName = order.items[0].productName;
+        const productQuantity = order.items[0].quantity;
+        const adminPhone = process.env.ADMIN_WHATSAPP_NUMBER || "6281314998265";
+        const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
+        const trackingUrl = `${appUrl}/orders/track?token=${trackingToken}`;
+
+        const waMessage =
+            `Halo Admin! Saya mau order:\n\n` +
+            `*${productName} (${productQuantity} unit)*\n` +
+            `Total: *${formatRupiah(order.totalAmount)}*\n` +
+            `Order ID: *${order.orderNumber}*\n` +
+            `Nama: ${customerName}\n` +
+            `HP: ${normalizedPhone}\n\n` +
+            `Link tracking pesanan saya:\n` +
+            `${trackingUrl}\n\n` +
+            `Mohon info rekening untuk transfer. Terima kasih!`;
+
+        const whatsappLink = `https://wa.me/${adminPhone}?text=${encodeURIComponent(waMessage)}`;
+
         return Response.json(
             {
                 success: true,
@@ -178,6 +202,8 @@ export async function POST(req: NextRequest) {
                     totalAmount: order.totalAmount,
                     expiresAt: order.expiresAt,
                     items: order.items,
+                    whatsappLink,
+                    trackingUrl,
                 },
             },
             { status: 201 }
